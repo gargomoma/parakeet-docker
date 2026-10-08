@@ -62,7 +62,7 @@ considered, but CPU latency proved adequate.
 ## Quick start with Docker
 
 ```sh
-docker run --name wyoming-parakeet -u 1000:1000 \
+docker run --name parakeet-docker -u 1000:1000 \
   -p 10300:10300 -p 10301:10301 -d ghcr.io/gargomoma/parakeet-docker:latest
 ```
 
@@ -75,10 +75,10 @@ docker compose up --build -d
 Alternatively, using _Docker compose_:
 ```yaml
 services:
-  wyoming-parakeet:
+  parakeet-docker:
     build: .
     image: ghcr.io/gargomoma/parakeet-docker:latest
-    container_name: wyoming-parakeet
+    container_name: parakeet-docker
     restart: unless-stopped
     ports:
       - "10300:10300"
