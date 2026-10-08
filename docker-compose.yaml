@@ -1,10 +1,12 @@
 services:
   wyoming-parakeet:
-    image: ghcr.io/jpwoodbu/wyoming-parakeet:latest
+    build: .
+    image: ghcr.io/gargomoma/parakeet-docker:latest
     container_name: wyoming-parakeet
     restart: unless-stopped
     ports:
       - "10300:10300"
+      - "10301:10301"
     user: "1000:1000"
     volumes:
       - models:/models

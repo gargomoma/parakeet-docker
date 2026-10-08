@@ -1,25 +1,23 @@
-"""Event handler for clients of the server."""
-from typing import Optional
+"""Wyoming protocol event handler for clients of the server."""
+from __future__ import annotations
 
-import asyncio
 import logging
-import os
-import tempfile
-import time
-import wave
 
 from wyoming import asr
 from wyoming import audio
-from wyoming import event
 from wyoming import info
 from wyoming import server
+from wyoming.event import Event
+
+from wyoming_parakeet import audio as audio_utils
+from wyoming_parakeet import transcribe
 
 
 _LOGGER = logging.getLogger(__name__)
 
 
-REPO_ID = "istupakov"
-MODEL_ID = "parakeet-tdt-0.6b-v3-onnx"
+SAMPLE_WIDTH = 2
+"""Bytes per sample after conversion. Parakeet is fed signed 16-bit PCM."""
 
 _INFO = info.Info(
     asr=[
@@ -34,84 +32,54 @@ _INFO = info.Info(
             version="0.0.1",
             models=[
                 info.AsrModel(
-                    name=MODEL_ID,
+                    name=transcribe.MODEL_ID,
                     description="NVIDIA Parakeet multilingual automatic speech recognition (ASR) model",
                     attribution=info.Attribution(
                         name="Ilya Stupakov",
-                        url=f"https://huggingface.co/{REPO_ID}/{MODEL_ID}",
+                        url=f"https://huggingface.co/{transcribe.REPO_ID}/{transcribe.MODEL_ID}",
                     ),
                     installed=True,
-                    # TODO(jpwoodbu) Fill out this list of languages.
-                    languages=["en"],
+                    languages=list(transcribe.MODEL_LANGUAGES),
                     version="v3",
                 ),
-            ]
+            ],
         )
     ]
 )
 
 
 class ParakeetEventHandler(server.AsyncEventHandler):
+    """Handles one Wyoming ASR session per connection."""
 
-    def __init__(
-        self,
-        model,
-        model_lock: asyncio.Lock,
-        *args,
-        **kwargs,
-    ) -> None:
+    def __init__(self, transcriber: transcribe.ParakeetTranscriber, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
 
         self.info_event = _INFO.event()
-        self.model = model
-        self.model_lock = model_lock
-        self._wav_dir = tempfile.TemporaryDirectory()
-        self._wav_path = os.path.join(self._wav_dir.name, "speech.wav")
-        self._wav_file: Optional[wave.Wave_write] = None
+        self.transcriber = transcriber
+        self._max_bytes = transcriber.max_samples * SAMPLE_WIDTH
+        self._start()
 
-    async def handle_event(self, event: event.Event) -> bool:
+    async def handle_event(self, event: Event) -> bool:
+        if audio.AudioStart.is_type(event.type):
+            self._start()
+            return True
+
         if audio.AudioChunk.is_type(event.type):
-            chunk = audio.AudioChunk.from_event(event)
-
-            if self._wav_file is None:
-                self._wav_file = wave.open(self._wav_path, "wb")
-                self._wav_file.setframerate(chunk.rate)
-                self._wav_file.setsampwidth(chunk.width)
-                self._wav_file.setnchannels(chunk.channels)
-
-            self._wav_file.writeframes(chunk.audio)
+            self._append(audio.AudioChunk.from_event(event))
             return True
 
         if audio.AudioStop.is_type(event.type):
-            _LOGGER.debug("Audio stopped. Transcribing...")
-            assert self._wav_file is not None
-
-            self._wav_file.close()
-            self._wav_file = None
-
-            async with self.model_lock:
-                start_time = time.perf_counter()
-                text = self.model.recognize(self._wav_path)
-                end_time = time.perf_counter()
-            assert isinstance(text, str)
-            inference_time = end_time - start_time
-            _LOGGER.info(f"Transcribed in {inference_time:.3f}s: {text}")
-
-            await self.write_event(asr.Transcript(text=text).event())
-            _LOGGER.debug("Completed request")
-
-            # Reset
-            self._language = self._language
-
+            await self._stop()
             return False
 
         if asr.Transcribe.is_type(event.type):
-            transcribe = asr.Transcribe.from_event(event)
-            if transcribe.language:
-                self._language = transcribe.language
+            language = asr.Transcribe.from_event(event).language
+            if language:
                 _LOGGER.debug(
-                    "Language set to %s but is ignored by this handler",
-                    transcribe.language)
+                    "Language %s requested, but this model auto-detects the "
+                    "spoken language so the request is ignored",
+                    language,
+                )
             return True
 
         if info.Describe.is_type(event.type):
@@ -120,3 +88,49 @@ class ParakeetEventHandler(server.AsyncEventHandler):
             return True
 
         return True
+
+    def _start(self) -> None:
+        """Reset the buffer for a new utterance on this connection."""
+        self._pcm = bytearray()
+        self._truncated = False
+        # One converter per utterance: it carries resampler state between chunks.
+        self._converter = audio.AudioChunkConverter(
+            rate=audio_utils.TARGET_SAMPLE_RATE, width=SAMPLE_WIDTH, channels=1
+        )
+
+    def _append(self, chunk: audio.AudioChunk) -> None:
+        """Buffer converted PCM, dropping anything past the duration limit."""
+        converted = self._converter.convert(chunk)
+
+        remaining = self._max_bytes - len(self._pcm)
+        if remaining <= 0:
+            self._truncated = True
+            return
+
+        if len(converted.audio) > remaining:
+            self._pcm.extend(converted.audio[:remaining])
+            self._truncated = True
+        else:
+            self._pcm.extend(converted.audio)
+
+    async def _stop(self) -> None:
+        """Transcribe the buffered audio and send the transcript."""
+        _LOGGER.debug("Audio stopped. Transcribing...")
+
+        if self._truncated:
+            _LOGGER.warning(
+                "Input exceeded %.0fs and was trimmed to the model limit",
+                self.transcriber.max_audio_seconds,
+            )
+
+        if not self._pcm:
+            _LOGGER.warning("No audio received, sending an empty transcript")
+            await self.write_event(asr.Transcript(text="").event())
+            return
+
+        transcript = await self.transcriber.transcribe(
+            audio_utils.pcm_to_waveform(bytes(self._pcm))
+        )
+
+        await self.write_event(asr.Transcript(text=transcript.text).event())
+        _LOGGER.debug("Completed request")

@@ -3,9 +3,9 @@ requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "wyoming-parakeet"
-version = "0.1.1"
-description = "Wyoming protocol server for NVIDIA Parakeet"
+name = "parakeet-docker"
+version = "0.2.0"
+description = "Wyoming and OpenAI-compatible speech-to-text server for NVIDIA Parakeet"
 readme = "README.md"
 requires-python = ">=3.13"
 license = { text = "Apache-2.0" }
@@ -21,7 +21,11 @@ classifiers = [
 dependencies = [
     "wyoming==1.8.0",
     "onnx-asr[cpu,hub]",
+    "aiohttp>=3.11",
+    "numpy>=1.22.4",
+    "soundfile>=0.12",
 ]
 
 [project.urls]
-Homepage = "https://github.com/jpwoodbu/wyoming-parakeet"
+Homepage = "https://github.com/gargomoma/parakeet-docker"
+Upstream = "https://github.com/jpwoodbu/wyoming-parakeet"
