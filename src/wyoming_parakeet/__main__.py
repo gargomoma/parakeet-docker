@@ -104,8 +104,10 @@ async def start(
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGINT, signal.SIGTERM):
         # Not implemented on Windows, where Ctrl+C already cancels the task.
+        # partial is required: _cancel_all(tasks) would execute immediately and
+        # cancel the servers instead of registering a handler.
         with contextlib.suppress(NotImplementedError):
-            loop.add_signal_handler(sig, _cancel_all(server_tasks))
+            loop.add_signal_handler(sig, functools.partial(_cancel_all, server_tasks))
 
     try:
         await asyncio.gather(*server_tasks)
