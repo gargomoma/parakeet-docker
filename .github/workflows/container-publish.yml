@@ -9,6 +9,9 @@ on:
   # push steps are skipped so no registry token is exposed to PR code.
   pull_request:
     branches: ['main']
+  # Allow re-running a publish by hand from the Actions tab, without needing an
+  # empty commit.
+  workflow_dispatch:
 
 env:
   REGISTRY: ghcr.io
